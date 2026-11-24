@@ -80,9 +80,12 @@ class HelpdeskTicketMerge(models.TransientModel):
             ticket._get_html_link(ticket.number) for ticket in merged_tickets
         )
         self._add_message(self.env._("from"), ticket_numbers, self.dst_ticket_id)
+        # Only admins can change res_id on mail.message. The user must be
+        # able to write both tickets, so check that and then move as sudo.
+        (merged_tickets | self.dst_ticket_id).check_access("write")
         merged_tickets.message_ids.filtered(
             lambda r: r.message_type != "notification"
-        ).write({"res_id": self.dst_ticket_id.id})
+        ).sudo().write({"res_id": self.dst_ticket_id.id})
         merged_tickets.activity_ids.write({"res_id": self.dst_ticket_id.id})
         merged_tickets.write({"active": False})
 

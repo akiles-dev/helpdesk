@@ -1,3 +1,5 @@
+from odoo.tests import new_test_user
+
 from odoo.addons.base.tests.common import BaseCommon
 
 
@@ -36,3 +38,25 @@ class TestHelpdeskTicketMerge(BaseCommon):
         self.assertTrue(self.ticket_merge_2.user_id)
         self.ticket_merge_2.merge_tickets()
         self.assertEqual(self.ticket_merge_2.dst_ticket_id.name, "Ticket 2")
+
+    def test_helpdesk_ticket_merge_as_helpdesk_user(self):
+        # A helpdesk user is not an admin, and Odoo allows only admins to
+        # change res_id on mail.message. The merge must still move the
+        # messages to the destination ticket.
+        user = new_test_user(
+            self.env,
+            login="helpdesk_mgmt_merge-user",
+            groups="helpdesk_mgmt.group_helpdesk_user",
+        )
+        message = self.ticket_1.message_post(
+            body="Hello", message_type="comment"
+        )
+        wizard = (
+            self.HelpdeskTicketMerge.with_user(user)
+            .with_context(active_ids=[self.ticket_1.id, self.ticket_2.id])
+            .create({})
+        )
+        wizard.dst_ticket_id = self.ticket_2.id
+        wizard.merge_tickets()
+        self.assertEqual(message.res_id, self.ticket_2.id)
+        self.assertFalse(self.ticket_1.active)
