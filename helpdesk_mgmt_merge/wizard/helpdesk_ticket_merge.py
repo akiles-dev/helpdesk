@@ -70,6 +70,19 @@ class HelpdeskTicketMerge(models.TransientModel):
 
         merged_tickets = self.ticket_ids - self.dst_ticket_id
         self._merge_followers(merged_tickets)
+        # Move the messages to the destination ticket. The mail gateway
+        # sends a reply to the record of the message that it answers (by
+        # In-Reply-To/References). If the messages stay on the merged ticket,
+        # replies go to it, and nobody sees them because it is archived.
+        # Only admins can change res_id on mail.message. The user must be
+        # able to write both tickets, so check that and then move as sudo.
+        (merged_tickets | self.dst_ticket_id).check_access("write")
+        merged_tickets.message_ids.filtered(
+            lambda r: r.message_type != "notification"
+        ).sudo().write({"res_id": self.dst_ticket_id.id})
+        merged_tickets.activity_ids.write({"res_id": self.dst_ticket_id.id})
+        # Post the notes after the move, so that the "merged to" note stays
+        # on the merged ticket and shows where the conversation went.
         for ticket in merged_tickets:
             self._add_message(
                 self.env._("to"),
@@ -80,13 +93,6 @@ class HelpdeskTicketMerge(models.TransientModel):
             ticket._get_html_link(ticket.number) for ticket in merged_tickets
         )
         self._add_message(self.env._("from"), ticket_numbers, self.dst_ticket_id)
-        # Only admins can change res_id on mail.message. The user must be
-        # able to write both tickets, so check that and then move as sudo.
-        (merged_tickets | self.dst_ticket_id).check_access("write")
-        merged_tickets.message_ids.filtered(
-            lambda r: r.message_type != "notification"
-        ).sudo().write({"res_id": self.dst_ticket_id.id})
-        merged_tickets.activity_ids.write({"res_id": self.dst_ticket_id.id})
         merged_tickets.write({"active": False})
 
         return {
@@ -136,7 +142,11 @@ class HelpdeskTicketMerge(models.TransientModel):
             self.user_id = self.dst_ticket_id.user_id
 
     def _add_message(self, way, ticket_numbers, ticket):
-        """Send a message post with to advise the helpdesk ticket about the merge.
+        """Log an internal note on the helpdesk ticket about the merge.
+
+        A note, not a message: a message is sent by email to all followers,
+        customers too. The customer cannot open the linked tickets, and
+        replies to the notice are lost if they go to the merged ticket.
         :param way : choice between "from" or "to"
         :param ticket_numbers : list of helpdesk ticket numbers to add in the body
         :param ticket : the ticket where the message will be posted
@@ -154,5 +164,5 @@ class HelpdeskTicketMerge(models.TransientModel):
             body=body,
             subject=subject,
             message_type="comment",
-            subtype_id=self.env.ref("mail.mt_comment").id,
+            subtype_xmlid="mail.mt_note",
         )

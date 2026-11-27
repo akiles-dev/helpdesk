@@ -102,3 +102,56 @@ class TestHelpdeskTicketMerge(BaseCommon):
             wizard.dst_ticket_id = self.ticket_2.id
             wizard.merge_tickets()
         self.assertTrue(self.ticket_1.active)
+
+    def _merge(self, src, dst):
+        wizard = self.HelpdeskTicketMerge.with_context(
+            active_ids=[src.id, dst.id]
+        ).create({})
+        wizard.dst_ticket_id = dst.id
+        wizard.merge_tickets()
+
+    def _merge_notes(self, ticket):
+        return self.env["mail.message"].search(
+            [
+                ("model", "=", "helpdesk.ticket"),
+                ("res_id", "=", ticket.id),
+                ("body", "ilike", "has been merged"),
+            ]
+        )
+
+    def test_helpdesk_ticket_merge_notes_are_internal(self):
+        # The notices are internal notes, so they are not sent by email to
+        # the followers (customers too). The "merged to" note stays on the
+        # merged ticket.
+        self._merge(self.ticket_1, self.ticket_2)
+        mt_note = self.env.ref("mail.mt_note")
+        for ticket, way in ((self.ticket_1, "to"), (self.ticket_2, "from")):
+            notes = self._merge_notes(ticket)
+            self.assertEqual(len(notes), 1)
+            self.assertIn(f"merged {way}", notes.body)
+            self.assertEqual(notes.subtype_id, mt_note)
+
+    def test_helpdesk_ticket_merge_reply_goes_to_destination(self):
+        # A reply to an email of the merged ticket goes to the destination
+        # ticket, not to the archived merged ticket.
+        email = (
+            "From: Customer <customer@example.com>\n"
+            "To: support@example.com\n"
+            "Subject: Doors\n"
+            "Message-Id: <{msgid}@example.com>\n"
+            "{headers}"
+            "Content-Type: text/plain; charset=utf-8\n\nHello\n"
+        )
+        Thread = self.env["mail.thread"]
+        ticket = self.env["helpdesk.ticket"].browse(
+            Thread.message_process(
+                "helpdesk.ticket", email.format(msgid="first", headers="")
+            )
+        )
+        self._merge(ticket, self.ticket_2)
+        self.assertFalse(ticket.active)
+        reply = Thread.message_process(
+            "helpdesk.ticket",
+            email.format(msgid="reply", headers="In-Reply-To: <first@example.com>\n"),
+        )
+        self.assertEqual(reply, self.ticket_2.id)
